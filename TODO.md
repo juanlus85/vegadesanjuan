@@ -1,0 +1,19 @@
+# Resultados de la aplicación
+
+- [ ] **Web pública y contacto.** Sitio moderno, atractivo y sencillo de usar, responsive, con el logotipo facilitado y la información verificada de vegadesanjuan.es. Formulario de contacto que se remita por SMTP a una o dos direcciones configurables.
+- [ ] **Alta de socios.** Formulario para dar de alta una vivienda/unidad familiar y conectar con Stripe según corresponda, distinguiendo registro de tarjeta y cuota pagada. 2026 es exento y en 2027 la cuota anual es 20 € por vivienda; no cobrar el año exento.
+- [ ] **Panel de administradores.** Comprobar nuevas altas, consultar y gestionar base de datos de familias y miembros, generar cuotas anuales y cargos extraordinarios, registrar pagos manuales y sus referencias, ver estados y configurar servidor SMTP y destinatarios (contraseñas sensibles protegidas en variables de entorno).
+- [ ] **Panel de socios y vivienda.** Consultar y modificar datos personales, añadir miembros a la unidad familiar, consultar cuotas y pagos. Pago manual por transferencia, ver si está al corriente y pasar a cobro recurrente mediante tarjeta de Stripe con consentimiento.
+- [ ] **Tratamiento histórico y anual.** Los socios existentes constan al corriente de 2025; 2026 se refleja como exento, no como ingreso; cuota de 20 € por vivienda para 2027 queda pendiente a partir del 1/1/2027 y de forma equivalente en años futuros, sin crear duplicados.
+- [ ] **Eventos de la asociación.** Administradores pueden crear eventos y ver asistentes. En el panel de socios se ven próximos eventos y pueden marcar «Voy a asistir»; cuando el evento lo requiere, también pagar entradas.
+- [ ] **Cartero Real.** Evento del 13 de diciembre; año y precio reducido sujetos a confirmación, valores provisionales 2026 y 2,50 €. Entradas de socios hasta un máximo acumulado igual a los miembros de su unidad familiar y entradas de invitados a 4 € sin límite propio. Pago Stripe verificado, registro de cantidades y pagos; administradores ven quién ha pagado y cuántas entradas. No habilitar cobros reales con precio provisional sin validación.
+- [ ] **Portabilidad y operación.** Instalable en VPS con Plesk, Node.js y MySQL y actualizable mediante git pull origin main; exportación CSV y acceso directo a base de datos. Documentación de instalación, variables de entorno sin .env, webhook Stripe y SMTP, versión y fecha visibles. Sin datos falsos ni secretos en el repositorio.
+
+## Estado y pendientes para producción
+
+- La aplicación y las pantallas están implementadas, pero aún no se ha desplegado en el VPS ni conectado el repositorio GitHub del usuario.
+- La migración de tablas, el año exento, la cuota de 20 €, el histórico sin ingresos inventados y la vinculación administrativa tienen implementación; no se han importado socios reales.
+- Los pagos recurrentes y los pagos reales están deshabilitados. El alta no termina aún en Stripe y los pagos únicos solo admiten claves de prueba. Antes de aceptar dinero hay que completar conciliación auditada de intentos inciertos, pagos tardíos de entradas, devoluciones y disputas; evitar cobros accidentales al repetir pedidos; definir la verificación de miembros para precios reducidos; probar concurrencia MySQL/InnoDB y efectuar pruebas completas con Stripe y sus webhooks en modo de prueba.
+- El administrador no dispone todavía de edición individual de miembros ajenos; sí hay exportación de miembros. El correo conserva detalle por destinatario, pero no tiene pantalla de contactos ni reenvío selectivo.
+- El Cartero Real sigue como borrador no publicado: confirmar año, horario, lugar y precio reducido antes de publicar o habilitar el cobro.
+- Configurar y probar SMTP, importar y revisar los datos de socios, revisar privacidad y seguridad, respaldar el VPS y comprobar la posible alteración del contenido mostrado a rastreadores en el dominio actual.
