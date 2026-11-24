@@ -26,6 +26,8 @@ Aplicación web de la asociación, diseñada para ejecutarse en un VPS propio co
 
 Si los comandos de mantenimiento ejecutados por SSH no heredan las variables definidas para la aplicación en Plesk, utiliza una tarea de Plesk con las mismas variables o facilítalas temporalmente a la sesión de forma segura. No pegues claves en comandos que queden en el historial.
 
+La versión v1.1.1 completa en el lockfile los binarios opcionales de Rollup y esbuild para instalaciones limpias en distintas plataformas, incluidos Linux x64 y Alpine, para resolver el fallo observado en v1.1.0. La corrección aún no se ha validado mediante una compilación en el contenedor hospedado y no garantiza por sí misma el arranque o la publicación. El contenedor gestionado de publicación tiene almacenamiento efímero y no cumple el requisito de persistencia de `UPLOADS_DIR`: no lo sustituyas por una carpeta temporal ni lo uses para guardar justificantes reales. Para un despliegue gestionado se requiere adaptar previamente el almacenamiento a un servicio privado y persistente compatible, además de configurar y comprobar separadamente la base de datos y los secretos. La instalación prevista aquí es el VPS propio con almacenamiento persistente.
+
 ## Alta y justificantes de transferencia
 
 El alta crea una familia pendiente de aprobación y una cuenta; pide la fecha de nacimiento del titular y permite añadir familiares con fecha opcional. La preferencia guardada —gestión manual, solicitud de pago único o solicitud de suscripción— **no inicia un cobro, no recoge datos de tarjeta ni activa una suscripción**. Está separada del método de pago operativo, se muestra en los paneles de socio y administración y se incluye en el CSV de familias; todavía no se puede editar desde el panel.
