@@ -157,7 +157,7 @@ function Home() {
       <div className="hero-image" aria-hidden="true" />
       <div className="wrap hero-content"><div className="hero-copy">
         <p className="hero-kicker"><span /> SAN JUAN DE AZNALFARACHE · SEVILLA</p>
-        <h1 id="hero-title">Un barrio<br />que <em>nos une.</em></h1>
+        <h1 id="hero-title">Una zona{' '}<br />que <em>nos une.</em></h1>
         <p className="hero-intro">Las buenas cosas pasan cuando nos conocemos, nos cuidamos y caminamos juntos.</p>
         <div className="hero-actions"><Link className="button button-light" to="/alta">Quiero formar parte <ArrowRight size={18} /></Link><Link className="text-link light-link" to="/asociacion">Conoce la asociación <ArrowUpRight size={17} /></Link></div>
       </div><div className="hero-caption"><span>ASOCIACIÓN DE VECINOS</span><strong>Vega de San Juan</strong><small>Juntos, desde 2011</small></div></div>
