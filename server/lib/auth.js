@@ -47,6 +47,12 @@ export function checkOrigin(req, res, next) {
   if (!origin && req.get('Sec-Fetch-Site') === 'cross-site') return res.status(403).json({ ok: false, error: 'Solicitud de origen cruzado no autorizada.' });
   // Reject browser form submissions and text/plain JSON CSRF; webhook must bypass this middleware.
   const contentType = (req.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
+  if (req.method === 'POST' && req.path === '/member/transfer-proof' && contentType === 'application/octet-stream') {
+    if (origin !== configured || req.get('X-Requested-With') !== 'XMLHttpRequest') {
+      return res.status(403).json({ ok: false, error: 'La subida requiere el origen de la aplicación y X-Requested-With: XMLHttpRequest.' });
+    }
+    return next();
+  }
   if (req.method !== 'DELETE' && contentType !== 'application/json') return res.status(415).json({ ok: false, error: 'Se requiere contenido JSON.' });
   return next();
 }

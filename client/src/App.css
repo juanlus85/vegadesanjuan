@@ -185,8 +185,17 @@ h2 em { color: #008f7b; }
 .member-fields > p { color: #80958c; font-size: 12px; line-height: 1.5; margin: 0 0 16px; }
 .member-entry { padding: 14px; margin: 0 0 12px; background: #f4f8f5; }
 .member-title { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 12px; }
+.member-birth-date { margin-top: 15px; }
 .remove-member { border: 0; background: transparent; color: #a34f49; font-size: 12px; padding: 4px; text-decoration: underline; }
 .add-member { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; padding: 4px 0; color: #008b78; font-size: 12px; font-weight: 700; }
+.payment-options { min-width: 0; margin: 0; padding: 15px 0 0; border: 0; border-top: 1px solid #e5eee8; }
+.payment-options legend { padding: 0 8px 0 0; color: #1d4e50; font-size: 14px; font-weight: 700; }
+.form-page form label.payment-option { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; margin: 0 0 12px; line-height: 1.5; }
+.form-page .payment-option input[type='radio'] { flex: 0 0 auto; width: 17px; height: 17px; min-height: 0; padding: 0; margin: 0; accent-color: #008b78; }
+.payment-options > p, .proof-field > p { color: #617d74; font-size: 12px; line-height: 1.6; margin: 10px 0 14px; }
+.proof-field { padding: 14px; background: #f4f8f5; }
+.proof-field input[type='file'] { margin-top: 8px; max-width: 100%; }
+.proof-field > p { margin-bottom: 0; }
 .privacy-box { background: #f4f8f5; padding: 17px; }
 .privacy-box p { margin: 0 0 14px; color: #617d74; font-size: 11px; line-height: 1.6; }
 .privacy-box a { color: #087666; overflow-wrap: anywhere; }

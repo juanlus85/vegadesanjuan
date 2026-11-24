@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowDown, ArrowRight, ArrowUpRight, CalendarDays, HeartHandshake, MapPin, Menu, MessageCircle, Plus, ShieldCheck, UsersRound, X } from 'lucide-react';
@@ -258,38 +258,104 @@ function Login() {
     </form><p className="form-bottom">¿Aún no formas parte? <Link to="/alta">Hazte socio</Link></p></div></div></section></PublicLayout>;
 }
 
-type HouseholdMember = { name: string; relationship: string };
+type HouseholdMember = { name: string; relationship: string; birthDate: string };
+
+function todayInMadrid(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value ?? '';
+  return `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}`;
+}
+
+function isValidBirthDate(value: string, today: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]);
+  if (year < 1000 || month < 1 || month > 12) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= daysInMonth[month - 1] && value <= today;
+}
+
+type PaymentPreference = 'manual' | 'single_card' | 'subscription';
+
+function proofFileError(file: File): string | null {
+  if (file.size === 0 || file.size > 8 * 1024 * 1024) return 'El justificante debe tener contenido y pesar como máximo 8 MiB.';
+  if (!/\.(pdf|jpe?g|png)$/i.test(file.name) || (file.type && !['application/pdf', 'image/jpeg', 'image/png'].includes(file.type))) {
+    return 'El justificante debe ser un archivo PDF, JPEG o PNG.';
+  }
+  return null;
+}
+
+async function uploadTransferProof(file: File): Promise<void> {
+  const response = await fetch('/api/member/transfer-proof', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Requested-With': 'XMLHttpRequest', 'X-File-Name': encodeURIComponent(file.name) },
+    body: file,
+  });
+  const data = await response.json() as ApiResult;
+  if (!response.ok || data.ok !== true) throw new Error('No se ha podido confirmar el justificante.');
+}
+
 function Register() {
   const contactEmail = useContext(ContactEmailContext);
   const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [phone, setPhone] = useState(''); const [address, setAddress] = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [password, setPassword] = useState(''); const [confirm, setConfirm] = useState(''); const [privacy, setPrivacy] = useState(false);
   const [members, setMembers] = useState<HouseholdMember[]>([]); const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<FormStatus>(null);
+  const [paymentPreference, setPaymentPreference] = useState<PaymentPreference>('manual');
+  const [proofFile, setProofFile] = useState<File | null>(null); const proofInput = useRef<HTMLInputElement>(null);
+  const [uploadingProof, setUploadingProof] = useState(false); const [proofNotice, setProofNotice] = useState<FormStatus>(null);
   const [done, setDone] = useState(false);
   function updateMember(index: number, field: keyof HouseholdMember, value: string) { setMembers(items => items.map((item, i) => i === index ? { ...item, [field]: value } : item)); }
+  function changePaymentPreference(value: PaymentPreference) {
+    setPaymentPreference(value); setNotice(null);
+    if (value !== 'manual') setProofFile(null);
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setNotice(null);
+    event.preventDefault(); if (busy) return; setNotice(null);
     if (!name.trim() || !email.trim() || !address.trim()) { setNotice({ kind: 'error', message: 'Completa el nombre, el correo y la dirección de tu vivienda.' }); return; }
     const invalidPassword = passwordError(password);
     if (invalidPassword) { setNotice({ kind: 'error', message: invalidPassword }); return; }
     if (password !== confirm) { setNotice({ kind: 'error', message: 'Las contraseñas no coinciden.' }); return; }
     if (phone.trim() && !/^[+\d\s().-]{6,40}$/.test(phone.trim())) { setNotice({ kind: 'error', message: 'Introduce un teléfono válido.' }); return; }
     if (members.some(member => !member.name.trim() || !member.relationship.trim())) { setNotice({ kind: 'error', message: 'Completa el nombre y la relación de cada familiar añadido, o elimínalo.' }); return; }
+    const today = todayInMadrid();
+    if (!isValidBirthDate(birthDate, today)) { setNotice({ kind: 'error', message: 'Introduce una fecha de nacimiento real y no futura para el titular.' }); return; }
+    const invalidMemberIndex = members.findIndex(member => member.birthDate && !isValidBirthDate(member.birthDate, today));
+    if (invalidMemberIndex !== -1) { setNotice({ kind: 'error', message: `La fecha de nacimiento del familiar ${invalidMemberIndex + 1} debe ser real y no futura.` }); return; }
+    if (paymentPreference === 'manual' && proofFile) {
+      const error = proofFileError(proofFile);
+      if (error) { setNotice({ kind: 'error', message: error }); return; }
+    }
     if (!privacy) { setNotice({ kind: 'error', message: 'Debes aceptar el tratamiento de datos para solicitar el alta.' }); return; }
     setBusy(true);
     try {
-      await request('/api/auth/register', { method: 'POST', body: JSON.stringify({ name: name.trim(), email: email.trim(), password, phone: phone.trim(), address: address.trim(), members: members.map(member => ({ name: member.name.trim(), relationship: member.relationship.trim() })), privacyAccepted: privacy }) });
+      await request('/api/auth/register', { method: 'POST', body: JSON.stringify({ name: name.trim(), email: email.trim(), password, phone: phone.trim(), address: address.trim(), privacyAccepted: privacy, birthDate, paymentPreference, members: members.map(member => ({ name: member.name.trim(), relationship: member.relationship.trim(), birthDate: member.birthDate })) }) });
+      if (paymentPreference === 'manual' && proofFile) setUploadingProof(true);
       setPassword(''); setConfirm(''); setDone(true); window.scrollTo(0, 0);
+      if (paymentPreference === 'manual' && proofFile) {
+        try {
+          await uploadTransferProof(proofFile);
+          setProofNotice({ kind: 'success', message: 'El justificante se ha adjuntado para su revisión por la asociación.' });
+        } catch {
+          setProofNotice({ kind: 'warning', message: 'El alta sí ha quedado registrada, pero no hemos podido adjuntar el justificante o confirmar que se adjuntó. No repitas el registro; consulta con la asociación antes de enviarlo de nuevo.' });
+        } finally { setUploadingProof(false); setProofFile(null); }
+      }
     } catch (error) { setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'No se ha podido completar el alta.' }); }
     finally { setBusy(false); }
   }
-  return <PublicLayout><section className="form-page register-page"><div className="wrap form-layout"><div className="form-intro"><SectionLabel>FORMAR PARTE</SectionLabel><h1>Tu casa también<br /><em>es parte de esto.</em></h1><p>Una pequeña aportación compartida nos ayuda a hacer grandes cosas por nuestro barrio.</p><div className="join-facts"><div><strong>20 €</strong><span>al año por vivienda</span></div><p>2026 está exento. La cuota anual se aplica desde el 1 de enero de 2027.</p><p>Al completar este formulario no se realiza ningún cobro ni se solicitan datos de tarjeta.</p></div><p className="intro-small">Tu solicitud quedará pendiente de aprobación por la asociación.</p></div><div className="form-card register-card">{done ? <div className="registered"><span className="success-icon"><ShieldCheck size={30} /></span><h2>Gracias por sumarte.</h2><p>Tu alta se ha registrado y queda pendiente de aprobación por la asociación. Ya puedes acceder a tus datos con tu cuenta.</p><p>No se ha realizado ningún cobro.</p><Link className="button button-green" to="/acceso">Ir al acceso <ArrowRight size={18} /></Link></div> : <><div className="form-card-heading"><span>ALTA DE SOCIO</span><h2>Empecemos por ti.</h2><p>Los campos marcados con * son obligatorios.</p></div><form onSubmit={submit}>
+  return <PublicLayout><section className="form-page register-page"><div className="wrap form-layout"><div className="form-intro"><SectionLabel>FORMAR PARTE</SectionLabel><h1>Tu casa también<br /><em>es parte de esto.</em></h1><p>Una pequeña aportación compartida nos ayuda a hacer grandes cosas por nuestro barrio.</p><div className="join-facts"><div><strong>20 €</strong><span>al año por vivienda</span></div><p>2026 está exento. La cuota anual se aplica desde el 1 de enero de 2027.</p><p>Al completar este formulario no se realiza ningún cobro ni se solicitan datos de tarjeta.</p></div><p className="intro-small">Tu solicitud quedará pendiente de aprobación por la asociación.</p></div><div className="form-card register-card">{done ? <div className="registered"><span className="success-icon"><ShieldCheck size={30} /></span><h2>Gracias por sumarte.</h2><p>Tu alta se ha registrado y queda pendiente de aprobación por la asociación. Ya puedes acceder a tus datos con tu cuenta.</p><p>No se ha realizado ningún cobro.</p>{uploadingProof && <p role="status">Adjuntando el justificante; espera antes de salir de esta página.</p>}<Notice value={proofNotice} />{!uploadingProof && <Link className="button button-green" to="/acceso">Ir al acceso <ArrowRight size={18} /></Link>}</div> : <><div className="form-card-heading"><span>ALTA DE SOCIO</span><h2>Empecemos por ti.</h2><p>Los campos marcados con * son obligatorios.</p></div><form onSubmit={submit}>
     <label>Nombre y apellidos *<input required maxLength={160} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label>
+    <label>Fecha de nacimiento del titular *<input required type="date" min="1000-01-01" max={todayInMadrid()} autoComplete="bday" value={birthDate} onFocus={e => { e.currentTarget.max = todayInMadrid(); }} onChange={e => { setBirthDate(e.target.value); setNotice(null); }} onInvalid={() => setNotice({ kind: 'error', message: 'Introduce una fecha de nacimiento real y no futura para el titular.' })} /></label>
     <label>Correo electrónico *<input required type="email" maxLength={254} autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
     <div className="field-row"><label>Contraseña *<input required type="password" minLength={8} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /><small>Al menos 8 caracteres.</small></label><label>Repite la contraseña *<input required type="password" minLength={8} autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} /></label></div>
     <label>Dirección de la vivienda *<input required maxLength={255} autoComplete="street-address" value={address} onChange={e => setAddress(e.target.value)} /></label>
     <label>Teléfono <span className="optional">(opcional)</span><input type="tel" maxLength={40} autoComplete="tel" value={phone} onChange={e => setPhone(e.target.value)} /></label>
-    <div className="member-fields"><h3>Personas de la unidad familiar</h3><p>Si quieres, añade a las otras personas de tu vivienda. Podrás gestionarlas después.</p>{members.map((member, index) => <div className="member-entry" key={index}><div className="member-title"><strong>Familiar {index + 1}</strong><button type="button" className="remove-member" onClick={() => setMembers(items => items.filter((_, i) => i !== index))}>Eliminar</button></div><div className="field-row"><label>Nombre *<input required maxLength={160} value={member.name} onChange={e => updateMember(index, 'name', e.target.value)} /></label><label>Relación *<input required maxLength={80} value={member.relationship} onChange={e => updateMember(index, 'relationship', e.target.value)} /></label></div></div>)}<button className="add-member" type="button" disabled={members.length >= 99} onClick={() => setMembers(items => [...items, { name: '', relationship: '' }])}><Plus size={17} /> Añadir persona</button></div>
-    <div className="privacy-box"><p><strong>Información sobre privacidad.</strong> La Asociación de Vecinos Vega de San Juan utilizará tus datos para tramitar tu solicitud y gestionar la relación con la asociación. Puedes solicitar información o ejercer tus derechos escribiendo a <a href={contactMailto(contactEmail)}>{contactEmail}</a>.</p><label className="check-label"><input type="checkbox" required checked={privacy} onChange={e => setPrivacy(e.target.checked)} /><span>He leído esta información y consiento el tratamiento de mis datos para tramitar el alta. *</span></label></div>
+    <div className="member-fields"><h3>Personas de la unidad familiar</h3><p>Si quieres, puedes añadir un segundo asociado, tus hijos u otras personas de tu vivienda. Para cada persona añadida, indica su nombre y relación; su fecha de nacimiento es opcional. Podrás gestionarlas después.</p>{members.map((member, index) => <div className="member-entry" key={index}><div className="member-title"><strong>Familiar {index + 1}</strong><button type="button" className="remove-member" onClick={() => setMembers(items => items.filter((_, i) => i !== index))}>Eliminar</button></div><div className="field-row"><label>Nombre *<input required maxLength={160} value={member.name} onChange={e => updateMember(index, 'name', e.target.value)} /></label><label>Relación *<input required maxLength={80} value={member.relationship} onChange={e => updateMember(index, 'relationship', e.target.value)} /></label></div><label className="member-birth-date"><span>Fecha de nacimiento del familiar {index + 1} <span className="optional">(opcional)</span></span><input type="date" min="1000-01-01" max={todayInMadrid()} value={member.birthDate} onFocus={e => { e.currentTarget.max = todayInMadrid(); }} onChange={e => { updateMember(index, 'birthDate', e.target.value); setNotice(null); }} onInvalid={() => setNotice({ kind: 'error', message: `La fecha de nacimiento del familiar ${index + 1} debe ser real y no futura.` })} /></label></div>)}<button className="add-member" type="button" disabled={members.length >= 99} onClick={() => setMembers(items => [...items, { name: '', relationship: '', birthDate: '' }])}><Plus size={17} /> Añadir persona</button></div>
+    <fieldset className="payment-options"><legend>Modalidad de pago *</legend><label className="payment-option"><input type="radio" name="paymentPreference" value="manual" checked={paymentPreference === 'manual'} onChange={() => changePaymentPreference('manual')} /><span>Transferencia o gestión manual</span></label><label className="payment-option"><input type="radio" name="paymentPreference" value="single_card" checked={paymentPreference === 'single_card'} onChange={() => changePaymentPreference('single_card')} /><span>Solicitar pago único con tarjeta</span></label><label className="payment-option"><input type="radio" name="paymentPreference" value="subscription" checked={paymentPreference === 'subscription'} onChange={() => changePaymentPreference('subscription')} /><span>Solicitar suscripción anual con tarjeta</span></label><p>Solicita los datos bancarios a la asociación. Las opciones con tarjeta son solo solicitudes: aún no están habilitadas en vivo y requieren aprobación y configuración de Stripe. No se inicia ningún pago al solicitar el alta; 2026 está exento.</p>{paymentPreference === 'manual' && <div className="proof-field"><label htmlFor="transfer-proof">Justificante de transferencia <span className="optional">(opcional)</span></label><input ref={proofInput} id="transfer-proof" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" aria-describedby="proof-hint" onChange={e => { const file = e.target.files?.[0] ?? null; setProofFile(file); const error = file && proofFileError(file); setNotice(error ? { kind: 'error', message: error } : null); }} /><p id="proof-hint">PDF, JPEG o PNG; máximo 8 MiB. Se enviará después de registrar el alta.</p>{proofFile && <button type="button" className="remove-member" onClick={() => { setProofFile(null); if (proofInput.current) proofInput.current.value = ''; setNotice(null); }}>Quitar justificante</button>}</div>}</fieldset>
+    <div className="privacy-box"><p><strong>Información sobre privacidad.</strong> La Asociación de Vecinos Vega de San Juan utilizará los datos facilitados, incluida la fecha de nacimiento del titular y, si los añades, el nombre, la relación y la fecha de nacimiento de cada miembro, para tramitar tu solicitud y gestionar la relación con la asociación. La fecha de nacimiento de cada miembro es opcional. Incluye datos de otras personas, especialmente de menores, solo si estás autorizado a facilitarlos. Si adjuntas un justificante, se utilizará para revisar el pago. Puedes solicitar información o ejercer tus derechos escribiendo a <a href={contactMailto(contactEmail)}>{contactEmail}</a>.</p><label className="check-label"><input type="checkbox" required checked={privacy} onChange={e => setPrivacy(e.target.checked)} /><span>He leído esta información y consiento el tratamiento de los datos facilitados para tramitar el alta. *</span></label></div>
     <Notice value={notice} /><button className="button button-green button-full" disabled={busy}>{busy ? 'Enviando solicitud…' : 'Solicitar el alta'} <ArrowRight size={18} /></button><p className="form-hint center">Al solicitar el alta no se realiza ningún pago.</p>
     </form><p className="form-bottom">¿Ya tienes cuenta? <Link to="/acceso">Accede aquí</Link></p></>}</div></div></section></PublicLayout>;
 }

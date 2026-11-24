@@ -25,7 +25,11 @@ async function request(path, {method = 'GET', data, cookie, customOrigin = origi
 }
 async function register(n) {
   const email = `test-${nonce}-${n}@example.invalid`; emails.push(email);
-  const result = await request('/api/auth/register', { method: 'POST', data: { name: `Socio de prueba ${n}`, email, password: pass, address: `Domicilio de prueba ${nonce}`, phone: '', members: [{name: `Familiar prueba ${n}`, relationship: 'Familiar'}], privacyAccepted: true } });
+  const result = await request('/api/auth/register', { method: 'POST', data: {
+    name: `Socio de prueba ${n}`, email, password: pass, address: `Domicilio de prueba ${nonce}`, phone: '',
+    birthDate: '1985-06-15', members: [{name: `Familiar prueba ${n}`, relationship: 'Familiar', birthDate: n === 1 ? '2010-02-28' : ''}],
+    paymentPreference: n === 1 ? 'single_card' : 'subscription', privacyAccepted: true,
+  } });
   assert.equal(result.status, 201, JSON.stringify(result.json));
   assert.ok(result.cookie, 'Debe establecer sesión segura');
   assert.equal(result.json.family.status, 'pending');
@@ -36,15 +40,48 @@ try {
   const a = await register(1), b = await register(2);
   const own = await request('/api/member/summary', {cookie:a.cookie});
   assert.equal(own.status, 200); assert.equal(own.json.members.length, 2);
+  assert.ok(own.json.members[0].birth_date === '1985-06-15', 'La fecha sintética del titular debe persistir');
+  assert.ok(own.json.members[1].birth_date === '2010-02-28', 'La fecha sintética del familiar debe persistir');
+  assert.equal(own.json.family.payment_preference, 'single_card');
+  assert.equal(own.json.family.payment_method, 'manual', 'La preferencia no activa pagos con tarjeta');
   const other = await request('/api/member/summary', {cookie:b.cookie});
+  assert.equal(other.status, 200); assert.ok(other.json.members[1].birth_date === null, 'La fecha no indicada debe permanecer desconocida');
+  assert.equal(other.json.family.payment_preference, 'subscription');
+  assert.equal(other.json.family.payment_method, 'manual', 'La preferencia no activa suscripciones');
   const crossDelete = await request(`/api/member/members/${own.json.members[1].id}`, {method:'DELETE',cookie:b.cookie});
   assert.equal(crossDelete.status, 404, 'Una familia no puede modificar miembros de otra');
+  const crossBirthDate = await request(`/api/member/members/${own.json.members[1].id}/birth-date`, {method:'PUT',cookie:b.cookie,data:{birthDate:null}});
+  assert.equal(crossBirthDate.status, 404, 'Una familia no puede modificar fechas de otra');
+  assert.ok((await request('/api/member/summary', {cookie:a.cookie})).json.members[1].birth_date === '2010-02-28', 'La fecha debe permanecer intacta tras un intento ajeno');
+  const added = await request('/api/member/members', {method:'POST',cookie:a.cookie,data:{name:'Miembro temporal',relationship:'Familiar'}});
+  assert.equal(added.status, 201); assert.ok(added.json.member.birth_date === null, 'El nuevo miembro sin fecha debe conservar null');
+  const memberPath = `/api/member/members/${added.json.member.id}/birth-date`;
+  assert.equal((await request(memberPath, {method:'PUT',cookie:a.cookie,data:{birthDate:'2000-02-29'}})).status, 200);
+  const afterUpdate = await request('/api/member/summary', {cookie:a.cookie});
+  const updatedMember = afterUpdate.json.members.find(member => member.id === added.json.member.id);
+  assert.ok(updatedMember.birth_date === '2000-02-29', 'La fecha actualizada debe persistir');
+  assert.equal(updatedMember.name, 'Miembro temporal'); assert.equal(updatedMember.relationship, 'Familiar');
+  assert.equal((await request(memberPath, {method:'PUT',cookie:a.cookie,data:{birthDate:null}})).status, 200);
+  assert.ok((await request('/api/member/summary', {cookie:a.cookie})).json.members.find(member => member.id === added.json.member.id).birth_date === null, 'La fecha eliminada debe volver a null');
+  assert.equal((await request(`/api/member/members/${added.json.member.id}`, {method:'DELETE',cookie:a.cookie})).status, 200);
   assert.equal((await request('/api/admin/families',{cookie:a.cookie})).status,403);
+  assert.equal((await request(`/api/admin/families/${a.json.family.id}/members`,{cookie:a.cookie})).status,403);
   assert.equal((await request('/api/auth/login',{method:'POST',data:{email:emails[0],password:pass},customOrigin:'https://no-autorizado.invalid'})).status,403);
   const adminEmail = `admin-${nonce}@example.invalid`; emails.push(adminEmail);
   const [insert] = await db.execute("INSERT INTO users (name,email,password_hash,role,active) VALUES (?,?,?,'admin',1)", ['Admin de prueba', adminEmail, await bcrypt.hash(pass,12)]); userIds.push(insert.insertId);
   const admin = await request('/api/auth/login',{method:'POST',data:{email:adminEmail,password:pass}});
   assert.equal(admin.status,200,JSON.stringify(admin.json)); assert.ok(admin.cookie);
+  const adminMembers = await request(`/api/admin/families/${a.json.family.id}/members`,{cookie:admin.cookie});
+  assert.equal(adminMembers.status,200); assert.ok(adminMembers.json.members[1].birth_date === '2010-02-28', 'Administración debe poder consultar la fecha');
+  const listedFamilies = await request('/api/admin/families',{cookie:admin.cookie});
+  assert.equal(listedFamilies.status,200);
+  assert.equal(listedFamilies.json.families.find(family => family.id === a.json.family.id).payment_preference,'single_card');
+  assert.equal(listedFamilies.json.families.find(family => family.id === a.json.family.id).member_count,2);
+  assert.equal(listedFamilies.json.families.find(family => family.id === a.json.family.id).name,'Socio de prueba 1');
+  const csvResponse = await fetch(base + '/api/admin/export/members', {headers:{Origin:origin, Cookie:admin.cookie, 'X-Forwarded-Proto':'https'}});
+  assert.equal(csvResponse.status,200);
+  const csv = await csvResponse.text();
+  assert.ok(csv.includes('"birth_date"')); assert.ok(csv.includes('"2010-02-28"'));
   const activate = await request(`/api/admin/families/${a.json.family.id}`,{method:'PATCH',cookie:admin.cookie,data:{status:'active'}});
   assert.equal(activate.status,200,JSON.stringify(activate.json));
   const updated = await request('/api/member/summary',{cookie:a.cookie});
@@ -53,6 +90,10 @@ try {
   if (year === 2026) { const exempt = updated.json.charges.find(c => c.year === 2026); assert.ok(exempt); assert.equal(exempt.status,'exempt'); assert.equal(exempt.amount_cents,0); }
   const historic = await request('/api/admin/families',{method:'POST',cookie:admin.cookie,data:{name:'Familia histórica temporal',address:`Histórico ${nonce}`,phone:'',status:'active',source:'Prueba temporal automatizada',existingBefore2026:true}});
   assert.equal(historic.status,201,JSON.stringify(historic.json)); familyIds.push(historic.json.id);
+  const listedHistoric = (await request('/api/admin/families',{cookie:admin.cookie})).json.families.find(family => family.id === historic.json.id);
+  assert.equal(listedHistoric.name,'Familia histórica temporal');
+  assert.equal(listedHistoric.user_id,null);
+  assert.equal(listedHistoric.member_count,1);
   const [standing] = await db.execute('SELECT year,status FROM historical_standing WHERE family_id = ?',[historic.json.id]);
   assert.equal(standing.length,1); assert.equal(Number(standing[0].year),2025); assert.equal(standing[0].status,'current');
   const [historicPayments] = await db.execute('SELECT id FROM payments WHERE family_id = ?',[historic.json.id]);
@@ -73,7 +114,7 @@ try {
     const message = await request('/api/contact',{method:'POST',data:{name:'Prueba temporal',email:emails[0],message:'Prueba de integración, no es un mensaje real.'}});
     assert.equal(message.status, 503, 'Sin configuración SMTP no se debe informar de envío correcto');
   }
-  console.log('Correcto: registro, sesión, aislamiento, CSRF, permisos, activación, exención, histórico, vinculación y borrador de evento.');
+  console.log('Correcto: fechas, preferencias, registro, sesión, aislamiento, CSRF, permisos, activación, exención, histórico, vinculación y borrador de evento.');
 } finally {
   if (emails.length) {
     const [created] = await db.query(`SELECT id,family_id FROM users WHERE email IN (${emails.map(()=>'?').join(',')})`, emails);

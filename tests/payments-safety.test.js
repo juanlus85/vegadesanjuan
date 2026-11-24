@@ -5,7 +5,7 @@ import db from '../server/lib/db.js';
 import { HttpError, stripeConfig } from '../server/lib/stripe.js';
 import { webhookHandler } from '../server/routes/stripe.js';
 
-const envNames = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'APP_ORIGIN'];
+const envNames = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'APP_ORIGIN', 'NODE_ENV'];
 const webhookSecret = 'whsec_local_fake_not_real';
 
 function withEnvironment(values, fn) {
@@ -27,6 +27,7 @@ const configuredEnv = {
   STRIPE_SECRET_KEY: 'sk_test_local_fake_not_real',
   STRIPE_WEBHOOK_SECRET: webhookSecret,
   APP_ORIGIN: 'https://example.org',
+  NODE_ENV: 'test',
 };
 
 test('Stripe solo admite claves secretas o restringidas de pruebas inequívocas', () => {
@@ -56,6 +57,12 @@ test('Stripe solo admite claves secretas o restringidas de pruebas inequívocas'
   // El bloqueo de claves de producción prevalece aunque falten otras variables.
   withEnvironment({ STRIPE_SECRET_KEY: 'sk_live_do_not_use' }, () => {
     assert.throws(() => stripeConfig(), error => error.status === 503 && /conciliación/.test(error.message));
+  });
+});
+
+test('las claves de prueba no habilitan Stripe en una instalación de producción', () => {
+  withEnvironment({ ...configuredEnv, NODE_ENV: 'production' }, () => {
+    assert.throws(() => stripeConfig(), error => error instanceof HttpError && error.status === 503 && /producción/.test(error.message));
   });
 });
 

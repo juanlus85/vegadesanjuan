@@ -8,9 +8,12 @@ import { startAnnualScheduler } from './lib/annual.js';
 import coreRouter from './routes/core.js';
 import eventsRouter from './routes/events.js';
 import stripeRouter, { webhookHandler } from './routes/stripe.js';
+import transferProofRouter, { validateUploadsDirectory } from './routes/transfer-proofs.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
+// Rechazar el arranque antes de crear sesiones o escuchar si falta el almacén privado.
+await validateUploadsDirectory();
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -32,12 +35,16 @@ app.get('/api/health', async (_req, res) => {
 });
 app.use('/api', createSessionMiddleware());
 app.use('/api', checkOrigin);
-app.use('/api', coreRouter, eventsRouter, stripeRouter);
+app.use('/api', coreRouter, eventsRouter, stripeRouter, transferProofRouter);
 app.use('/api', (_req, res) => res.status(404).json({ ok: false, error: 'Ruta no encontrada.' }));
 app.use((error, _req, res, _next) => {
-  console.error('Error al procesar una solicitud:', error?.message || 'error desconocido');
+  // JSON parser errors may embed private request data in their message.
+  const category = typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : 'solicitud no procesada';
+  console.error('Error al procesar una solicitud:', category);
   if (res.headersSent) return;
   if (error?.code === 'ER_DUP_ENTRY') return res.status(409).json({ ok: false, error: 'Ya existe un registro con esos datos.' });
+  if (error?.code === 'TRANSFER_PROOF_STORAGE') return res.status(503).json({ ok: false, error: error.message });
+  if (error?.type === 'entity.too.large') return res.status(413).json({ ok: false, error: 'El cuerpo de la solicitud supera el tamaño permitido.' });
   const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 600 ? error.status : 500;
   const message = status < 500 && error instanceof SyntaxError ? 'El JSON de la solicitud no es válido.'
     : status < 500 && typeof error?.message === 'string' ? error.message.slice(0, 300)

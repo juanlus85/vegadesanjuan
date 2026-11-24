@@ -10,7 +10,7 @@ if (!process.env.DATABASE_URL) {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 try {
   let statementCount = 0;
-  for (const filename of ['schema.sql', 'history.sql', 'subscriptions.sql']) {
+  for (const filename of ['schema.sql', 'history.sql', 'subscriptions.sql', 'birth_dates.sql', 'payment_preferences.sql', 'transfer_proofs.sql']) {
     const sql = await fs.readFile(path.join(root, 'database', filename), 'utf8');
     // These bundled migrations contain standalone comments and simple DDL only.
     // Strip full-line comments so a trailing comment never becomes an empty query.

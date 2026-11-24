@@ -15,6 +15,9 @@ export function stripeConfig() {
   if (secret && (!/^(?:sk|rk)_test_.+/.test(secret) || /\s/.test(secret))) {
     throw new HttpError(503, 'Los cobros reales están deshabilitados hasta completar la conciliación de reembolsos, disputas y pagos pendientes; solo se permiten claves Stripe de pruebas sk_test_ o rk_test_.');
   }
+  if (process.env.NODE_ENV === 'production') {
+    throw new HttpError(503, 'Stripe está deshabilitado en producción. Las pruebas requieren una instalación y una base de datos aisladas.');
+  }
   if (!secret || !webhookSecret || !rawOrigin) {
     throw new HttpError(503, 'Stripe no está configurado; no se puede iniciar el pago.');
   }

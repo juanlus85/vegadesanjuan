@@ -38,6 +38,11 @@ function text(value, label, max, { required = true, multiline = false } = {}) {
   if ((required && !result) || result.length > max || forbidden.test(result)) bad(`${label} no es válido.`);
   return result;
 }
+function relationshipOf(value) {
+  const relationship = text(value ?? '', 'El parentesco', 80, { required: false });
+  if (relationship.toLowerCase() === 'titular') bad('El parentesco Titular está reservado para el titular de la familia.');
+  return relationship;
+}
 function emailOf(value) {
   const email = text(value, 'El correo', 254).toLowerCase();
   if (!isEmail(email)) bad('El correo no es válido.');
@@ -56,6 +61,15 @@ function dateOf(value, label = 'La fecha') {
   const date = new Date(`${value}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value || value < '1000-01-01' || value > '9999-12-31') bad(`${label} no es válida.`);
   return value;
+}
+function birthDateOf(value, { optional = false, now = new Date() } = {}) {
+  if (optional && (value === undefined || value === null || value === '')) return null;
+  const date = dateOf(value, 'La fecha de nacimiento');
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now).map(part => [part.type, part.value]));
+  if (date > `${parts.year}-${parts.month}-${parts.day}`) bad('La fecha de nacimiento no puede estar en el futuro.');
+  return date;
 }
 const familyRequired = req => {
   if (!req.session.familyId) throw new HttpError(403, 'Tu cuenta no tiene una familia asociada.');
@@ -129,18 +143,26 @@ router.post('/auth/register', registerLimit, wrap(async (req, res) => {
   const data = body(req);
   if (data.privacyAccepted !== true) bad('Debes aceptar expresamente la política de privacidad.');
   const name = text(data.name, 'El nombre', 160), email = emailOf(data.email), password = passwordOf(data.password);
+  const birthDate = birthDateOf(data.birthDate);
+  const paymentPreference = data.paymentPreference === undefined ? 'manual' : data.paymentPreference;
+  if (!['manual', 'single_card', 'subscription'].includes(paymentPreference)) bad('La preferencia de pago no es válida.');
   const address = text(data.address, 'La dirección', 255), phone = text(data.phone ?? '', 'El teléfono', 40, { required: false });
   if (data.members != null && (!Array.isArray(data.members) || data.members.length > 99)) bad('La lista de familiares no es válida.');
   const members = (data.members || []).map(member => {
     if (!member || typeof member !== 'object' || Array.isArray(member)) bad('Los datos de un familiar no son válidos.');
-    return { name: text(member.name, 'El nombre del familiar', 160), relationship: text(member.relationship ?? '', 'El parentesco', 80, { required: false }) };
+    return { name: text(member.name, 'El nombre del familiar', 160), relationship: relationshipOf(member.relationship), birthDate: birthDateOf(member.birthDate, { optional: true }) };
   });
   const hash = await bcrypt.hash(password, 12);
   const user = await transaction(async conn => {
     const [f] = await conn.execute("INSERT INTO families (address, phone, status, created_at) VALUES (?, ?, 'pending', ?)", [address, phone, madridNow()]);
+    await conn.execute('INSERT INTO family_payment_preferences (family_id, payment_preference) VALUES (?, ?)', [f.insertId, paymentPreference]);
     const [u] = await conn.execute("INSERT INTO users (family_id, name, email, password_hash, role) VALUES (?, ?, ?, ?, 'member')", [f.insertId, name, email, hash]);
-    await conn.execute("INSERT INTO family_members (family_id, name, relationship) VALUES (?, ?, 'Titular')", [f.insertId, name]);
-    for (const member of members) await conn.execute('INSERT INTO family_members (family_id, name, relationship) VALUES (?, ?, ?)', [f.insertId, member.name, member.relationship]);
+    const [holder] = await conn.execute("INSERT INTO family_members (family_id, name, relationship) VALUES (?, ?, 'Titular')", [f.insertId, name]);
+    await conn.execute('INSERT INTO member_birth_dates (member_id, birth_date) VALUES (?, ?)', [holder.insertId, birthDate]);
+    for (const member of members) {
+      const [insert] = await conn.execute('INSERT INTO family_members (family_id, name, relationship) VALUES (?, ?, ?)', [f.insertId, member.name, member.relationship]);
+      if (member.birthDate !== null) await conn.execute('INSERT INTO member_birth_dates (member_id, birth_date) VALUES (?, ?)', [insert.insertId, member.birthDate]);
+    }
     await audit(conn, u.insertId, 'privacy_consent', 'user', u.insertId, { accepted: true, source: 'registration' });
     await audit(conn, u.insertId, 'register', 'family', f.insertId);
     return { id: u.insertId, family_id: f.insertId, role: 'member' };
@@ -273,8 +295,13 @@ router.get('/member/summary', requireUser, wrap(async (req, res) => {
     if (!families.length) throw new HttpError(404, 'No se encontró la familia.');
     const [accounts] = await conn.execute('SELECT id FROM users WHERE id = ? AND family_id = ? AND active = TRUE FOR UPDATE', [req.session.userId, familyId]);
     if (!accounts.length) throw new HttpError(409, 'La familia de tu cuenta ha cambiado; actualiza la página.');
+    const [preferences] = await conn.execute('SELECT payment_preference FROM family_payment_preferences WHERE family_id = ?', [familyId]);
+    families[0].payment_preference = preferences[0]?.payment_preference ?? null;
     if (families[0].status === 'active') await ensureCurrentAnnualCharge(conn, familyId);
-    const [members] = await conn.execute('SELECT id, family_id, name, relationship, created_at FROM family_members WHERE family_id = ? ORDER BY id', [familyId]);
+    const [members] = await conn.execute(`SELECT fm.id, fm.family_id, fm.name, fm.relationship, fm.created_at,
+      DATE_FORMAT(bd.birth_date, '%Y-%m-%d') AS birth_date
+      FROM family_members fm LEFT JOIN member_birth_dates bd ON bd.member_id = fm.id
+      WHERE fm.family_id = ? ORDER BY fm.id`, [familyId]);
     const [charges] = await conn.execute('SELECT id, family_id, kind, year, description, amount_cents, due_date, status, paid_at, paid_reference, created_at FROM charges WHERE family_id = ? ORDER BY due_date DESC, id DESC', [familyId]);
     const [payments] = await conn.execute('SELECT id, family_id, charge_id, ticket_order_id, amount_cents, provider, status, reference, paid_at, created_at FROM payments WHERE family_id = ? ORDER BY created_at DESC, id DESC', [familyId]);
     const [historicalStanding] = await conn.execute('SELECT year, status, source, recorded_by AS recordedBy, recorded_at AS recordedAt FROM historical_standing WHERE family_id = ? ORDER BY year DESC', [familyId]);
@@ -299,23 +326,50 @@ router.put('/member/profile', requireUser, wrap(async (req, res) => {
 }));
 router.post('/member/members', requireUser, wrap(async (req, res) => {
   const familyId = familyRequired(req), data = body(req);
-  const name = text(data.name, 'El nombre', 160), relationship = text(data.relationship ?? '', 'El parentesco', 80, { required: false });
+  const name = text(data.name, 'El nombre', 160), relationship = relationshipOf(data.relationship);
+  const birthDate = birthDateOf(data.birthDate, { optional: true });
   const member = await transaction(async conn => {
     const [family] = await conn.execute('SELECT id FROM families WHERE id = ? FOR UPDATE', [familyId]);
     if (!family.length) throw new HttpError(404, 'No se encontró la familia.');
+    const [accounts] = await conn.execute('SELECT id FROM users WHERE id = ? AND family_id = ? AND active = TRUE FOR UPDATE', [req.session.userId, familyId]);
+    if (!accounts.length) throw new HttpError(409, 'La familia de tu cuenta ha cambiado; actualiza la página.');
     const [count] = await conn.execute('SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?', [familyId]);
     if (Number(count[0].n) >= 100) throw new HttpError(409, 'La familia ya ha alcanzado el máximo de personas.');
     const [insert] = await conn.execute('INSERT INTO family_members (family_id, name, relationship) VALUES (?, ?, ?)', [familyId, name, relationship]);
+    if (birthDate !== null) await conn.execute('INSERT INTO member_birth_dates (member_id, birth_date) VALUES (?, ?)', [insert.insertId, birthDate]);
     await audit(conn, req.session.userId, 'member_add', 'family_member', insert.insertId, { familyId });
-    return { id: insert.insertId, family_id: familyId, name, relationship };
+    return { id: insert.insertId, family_id: familyId, name, relationship, birth_date: birthDate };
   });
   res.status(201).json({ ok: true, member });
+}));
+router.put('/member/members/:id/birth-date', requireUser, wrap(async (req, res) => {
+  const familyId = familyRequired(req), memberId = idOf(req.params.id), data = body(req);
+  if (Object.keys(data).length !== 1 || !Object.hasOwn(data, 'birthDate')) bad('Indica únicamente la fecha de nacimiento o null.');
+  const birthDate = data.birthDate === null ? null : birthDateOf(data.birthDate);
+  await transaction(async conn => {
+    const [families] = await conn.execute('SELECT id FROM families WHERE id = ? FOR UPDATE', [familyId]);
+    if (!families.length) throw new HttpError(404, 'No se encontró la familia.');
+    const [accounts] = await conn.execute('SELECT id FROM users WHERE id = ? AND family_id = ? AND active = TRUE FOR UPDATE', [req.session.userId, familyId]);
+    if (!accounts.length) throw new HttpError(409, 'La familia de tu cuenta ha cambiado; actualiza la página.');
+    const [members] = await conn.execute('SELECT id FROM family_members WHERE id = ? AND family_id = ? FOR UPDATE', [memberId, familyId]);
+    if (!members.length) throw new HttpError(404, 'No se encontró ese familiar.');
+    if (birthDate === null) await conn.execute('DELETE FROM member_birth_dates WHERE member_id = ?', [memberId]);
+    else await conn.execute('INSERT INTO member_birth_dates (member_id, birth_date) VALUES (?, ?) ON DUPLICATE KEY UPDATE birth_date = VALUES(birth_date)', [memberId, birthDate]);
+    await audit(conn, req.session.userId, 'member_birth_date_update', 'family_member', memberId, { familyId });
+  });
+  res.json({ ok: true });
 }));
 router.delete('/member/members/:id', requireUser, wrap(async (req, res) => {
   const familyId = familyRequired(req), memberId = idOf(req.params.id);
   await transaction(async conn => {
     const [families] = await conn.execute('SELECT id FROM families WHERE id = ? FOR UPDATE', [familyId]);
     if (!families.length) throw new HttpError(404, 'No se encontró la familia.');
+    // Keep the family → account → member lock order used by linking and other member operations.
+    const [accounts] = await conn.execute('SELECT id, family_id, role, active FROM users WHERE id = ? FOR UPDATE', [req.session.userId]);
+    const account = accounts[0];
+    if (!account || !account.active || account.role !== 'member' || Number(account.family_id) !== familyId) {
+      throw new HttpError(409, 'Tu cuenta o familia ha cambiado; actualiza la página.');
+    }
     const [members] = await conn.execute('SELECT id, relationship FROM family_members WHERE id = ? AND family_id = ? FOR UPDATE', [memberId, familyId]);
     if (!members.length) throw new HttpError(404, 'No se encontró ese familiar.');
     if (members[0].relationship === 'Titular') throw new HttpError(409, 'No se puede eliminar el titular desde esta pantalla.');
@@ -344,11 +398,27 @@ router.get('/admin/overview', requireAdmin, wrap(async (_req, res) => {
 }));
 router.get('/admin/families', requireAdmin, wrap(async (_req, res) => {
   const [families] = await db.query(`SELECT f.id, f.address, f.phone, f.status, f.payment_method, f.created_at, f.updated_at,
-    u.id AS user_id, COALESCE(u.name, (SELECT fm2.name FROM family_members fm2 WHERE fm2.family_id = f.id ORDER BY fm2.id LIMIT 1)) AS name, u.email AS email,
-    (SELECT COUNT(*) FROM family_members fm WHERE fm.family_id = f.id) AS member_count
-    FROM families f LEFT JOIN users u ON u.id = (SELECT MIN(u2.id) FROM users u2 WHERE u2.family_id = f.id)
+    u.id AS user_id, COALESCE(u.name, fm2.name) AS name, u.email AS email,
+    COALESCE(fm.member_count, 0) AS member_count, pref.payment_preference
+    FROM families f
+    LEFT JOIN (SELECT family_id, MIN(id) AS first_user_id FROM users WHERE family_id IS NOT NULL GROUP BY family_id) fu ON fu.family_id = f.id
+    LEFT JOIN users u ON u.id = fu.first_user_id
+    LEFT JOIN (SELECT family_id, COUNT(*) AS member_count, MIN(id) AS first_member_id FROM family_members GROUP BY family_id) fm ON fm.family_id = f.id
+    LEFT JOIN family_members fm2 ON fm2.id = fm.first_member_id
+    LEFT JOIN family_payment_preferences pref ON pref.family_id = f.id
     ORDER BY f.created_at DESC, f.id DESC`);
   res.json({ ok: true, families });
+}));
+router.get('/admin/families/:id/members', requireAdmin, wrap(async (req, res) => {
+  const familyId = idOf(req.params.id);
+  const [families] = await db.execute('SELECT id FROM families WHERE id = ?', [familyId]);
+  if (!families.length) throw new HttpError(404, 'No se encontró la familia.');
+  const [members] = await db.execute(`SELECT fm.id, fm.name, fm.relationship,
+    DATE_FORMAT(bd.birth_date, '%Y-%m-%d') AS birth_date
+    FROM family_members fm LEFT JOIN member_birth_dates bd ON bd.member_id = fm.id
+    WHERE fm.family_id = ? ORDER BY fm.id`, [familyId]);
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ ok: true, members });
 }));
 router.get('/admin/link-candidates', requireAdmin, wrap(async (_req, res) => {
   const [candidates] = await db.execute(`SELECT u.id AS userId, u.name AS userName, u.email, f.id AS familyId, f.address
@@ -416,7 +486,7 @@ router.post('/admin/families', requireAdmin, wrap(async (req, res) => {
   if (data.members != null && (!Array.isArray(data.members) || data.members.length > 99)) bad('La lista de familiares no es válida.');
   const members = (data.members || []).map(member => {
     if (!member || typeof member !== 'object' || Array.isArray(member)) bad('Los datos de un familiar no son válidos.');
-    return { name: text(member.name, 'El nombre del familiar', 160), relationship: text(member.relationship ?? '', 'El parentesco', 80, { required: false }) };
+    return { name: text(member.name, 'El nombre del familiar', 160), relationship: relationshipOf(member.relationship) };
   });
   const id = await transaction(async conn => {
     const [family] = await conn.execute('INSERT INTO families (address, phone, status, created_at) VALUES (?, ?, ?, ?)', [address, phone, status, madridNow()]);
@@ -550,8 +620,14 @@ router.put('/admin/settings', requireAdmin, wrap(async (req, res) => {
 }));
 
 const exports = {
-  families: ['SELECT f.id, f.address, f.phone, f.status, f.payment_method, f.created_at, u.name AS account_name, u.email AS account_email FROM families f LEFT JOIN users u ON u.id = (SELECT MIN(u2.id) FROM users u2 WHERE u2.family_id = f.id) ORDER BY f.id', ['id','address','phone','status','payment_method','created_at','account_name','account_email']],
-  members: ['SELECT id, family_id, name, relationship, created_at FROM family_members ORDER BY family_id, id', ['id','family_id','name','relationship','created_at']],
+  families: [`SELECT f.id, f.address, f.phone, f.status, f.payment_method, f.created_at,
+    u.name AS account_name, u.email AS account_email, pref.payment_preference
+    FROM families f
+    LEFT JOIN (SELECT family_id, MIN(id) AS first_user_id FROM users WHERE family_id IS NOT NULL GROUP BY family_id) fu ON fu.family_id = f.id
+    LEFT JOIN users u ON u.id = fu.first_user_id
+    LEFT JOIN family_payment_preferences pref ON pref.family_id = f.id
+    ORDER BY f.id`, ['id','address','phone','status','payment_method','created_at','account_name','account_email','payment_preference']],
+  members: [`SELECT fm.id, fm.family_id, fm.name, fm.relationship, fm.created_at, DATE_FORMAT(bd.birth_date, '%Y-%m-%d') AS birth_date FROM family_members fm LEFT JOIN member_birth_dates bd ON bd.member_id = fm.id ORDER BY fm.family_id, fm.id`, ['id','family_id','name','relationship','created_at','birth_date']],
   charges: ['SELECT id, family_id, kind, year, description, amount_cents, due_date, status, paid_at, paid_reference, marked_by, created_at FROM charges ORDER BY family_id, id', ['id','family_id','kind','year','description','amount_cents','due_date','status','paid_at','paid_reference','marked_by','created_at']],
   payments: ['SELECT id, family_id, charge_id, ticket_order_id, amount_cents, provider, status, reference, paid_at, created_at FROM payments ORDER BY family_id, id', ['id','family_id','charge_id','ticket_order_id','amount_cents','provider','status','reference','paid_at','created_at']],
 };
@@ -579,5 +655,5 @@ router.use((error, _req, res, _next) => {
   return res.status(500).json({ ok: false, error: 'No se pudo completar la operación.' });
 });
 
-export { createAnnualCharges };
+export { birthDateOf, createAnnualCharges };
 export default router;

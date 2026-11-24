@@ -38,6 +38,15 @@ function exactAnnualInvoice(invoice, charge) {
   return annualInvoiceYear(invoice, subscription) === Number(charge.year);
 }
 
+export function validateSubscriptionConsent(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || body.consent !== true) {
+    throw new HttpError(400, 'Debes autorizar expresamente el cobro anual mediante la casilla de consentimiento.');
+  }
+  if (body.consentVersion !== SUBSCRIPTION_CONSENT_VERSION) {
+    throw new HttpError(400, 'El texto de consentimiento ha cambiado. Revísalo y vuelve a aceptarlo.');
+  }
+}
+
 router.post('/member/charges/:id/checkout', requireUser, route(async (req, res) => {
   const id = positiveId(req.params.id);
   const family = familyId(req);
@@ -93,10 +102,23 @@ router.post('/member/charges/:id/checkout', requireUser, route(async (req, res) 
   res.json({ ok: true, url: session.url });
 }));
 
+router.get('/member/card/status', requireUser, (_req, res) => {
+  // No anunciar disponibilidad hasta aislar los datos de prueba: el webhook de
+  // suscripción puede marcar cuotas y métodos de pago en la base operativa.
+  // La bandera STRIPE_ENABLE_TEST_SUBSCRIPTIONS por sí sola no resuelve esto.
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ ok: true, enabledTest: false, consentText: SUBSCRIPTION_CONSENT_TEXT, consentVersion: SUBSCRIPTION_CONSENT_VERSION });
+});
+
 router.post('/member/card/setup', requireUser, route(async (req, res) => {
-  if (!SUBSCRIPTIONS_READY) throw new HttpError(503, 'El cobro periódico con tarjeta aún no está disponible. No se ha registrado consentimiento ni se ha configurado ningún cobro.');
-  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || req.body.consent !== true) {
-    throw new HttpError(400, 'Debes autorizar expresamente el cobro anual mediante la casilla de consentimiento.');
+  if (!SUBSCRIPTIONS_READY || process.env.STRIPE_ENABLE_TEST_SUBSCRIPTIONS !== 'true') {
+    throw new HttpError(503, 'El cobro periódico con tarjeta aún no está disponible. No se ha registrado consentimiento ni se ha configurado ningún cobro.');
+  }
+  validateSubscriptionConsent(req.body);
+  // El prefijo valida el formato, no demuestra que el endpoint sea de pruebas;
+  // la comprobación livemode=false del webhook sigue siendo obligatoria.
+  if (!/^whsec_[^\s]+$/.test(process.env.STRIPE_WEBHOOK_SECRET || '')) {
+    throw new HttpError(503, 'El webhook de Stripe no está configurado correctamente.');
   }
   const family = familyId(req);
   const user = positiveId(req.session.userId);
